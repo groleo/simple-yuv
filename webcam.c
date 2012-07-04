@@ -80,7 +80,7 @@ process_image                   (const void *           gah)
 	const char *p;
 	int i, j;
 
-	access("/dev/null", 0);
+	fprintf(stdout, "FRAME\n");
 
 	p = gah;
 	for (i = 0; i < SIZE; i++)
@@ -700,6 +700,8 @@ main                            (int                    argc,
         open_device ();
 
         init_device ();
+
+        fprintf(stdout, "YUV4MPEG2 C420jpeg W640 H480 F30:1 Ip\n");
 
         start_capturing ();
 

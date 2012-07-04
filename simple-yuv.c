@@ -100,7 +100,9 @@ read_frame(struct window *window)
 {
 	struct buffer *tmp;
 	int size = window->width * window->height;
+	char buf[256];
 
+	fgets(buf, sizeof buf, stdin);
 	fread(window->back->y, 1, size, stdin);
 	fread(window->back->u, 1, size / 4, stdin);
 	fread(window->back->v, 1, size / 4, stdin);
@@ -376,6 +378,8 @@ main(int argc, char **argv)
 	struct display *display;
 	struct window *window;
 	int test_pattern = 1;
+	int width, height;
+	char buf[256];
 
 	if (argc == 2 && strcmp(argv[1], "-") == 0)
 		test_pattern = 0;
@@ -388,7 +392,9 @@ main(int argc, char **argv)
 		window = create_window(display, 512, 512);
 		redraw(window, NULL, 0);
 	} else {
-		window = create_window(display, 640, 480);
+		fgets(buf, sizeof buf, stdin);
+		sscanf(buf, "YUV4MPEG2 C420jpeg W%d H%d", &width, &height);
+		window = create_window(display, width, height);
 	}
 
 	while (1) {
