@@ -21,6 +21,8 @@
  * OF THIS SOFTWARE.
  */
 
+#define _GNU_SOURCE
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -36,8 +38,6 @@
 #include <wayland-client.h>
 
 #include "wayland-drm-client-protocol.h"
-
-#define CAP 1
 
 struct display {
 	struct wl_display *display;
@@ -69,6 +69,10 @@ struct window {
 	struct wl_callback *callback;
 
 	struct buffer *front, *back;
+	uint32_t frame_duration, next_frame;
+	int has_timestamp;
+
+	void (*paint)(struct window *window, uint32_t time);
 };
 
 static void
@@ -96,9 +100,8 @@ static const struct wl_shell_surface_listener shell_surface_listener = {
 };
 
 static void
-read_frame(struct window *window)
+paint_stdin(struct window *window, uint32_t time)
 {
-	struct buffer *tmp;
 	int size = window->width * window->height;
 	char buf[256];
 
@@ -106,19 +109,12 @@ read_frame(struct window *window)
 	fread(window->back->y, 1, size, stdin);
 	fread(window->back->u, 1, size / 4, stdin);
 	fread(window->back->v, 1, size / 4, stdin);
-
-	wl_surface_attach(window->surface, window->back->buffer, 0, 0);
-	wl_surface_damage(window->surface,
-			  0, 0, window->width, window->height);
-
-	tmp = window->back;
-	window->back = window->front;
-	window->front = tmp;
 }
 
 static void
-paint_pixels(struct window *window, int width, int height, uint32_t time)
+paint_pixels(struct window *window, uint32_t time)
 {
+	int width = window->width, height = window->height;
 	const int halfh = height / 2;
 	const int halfw = width / 2;
 	int ir, or;
@@ -171,14 +167,20 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 	struct window *window = data;
 	struct buffer *tmp;
 
-	paint_pixels(window, window->width, window->height, time);
-	wl_surface_attach(window->surface, window->back->buffer, 0, 0);
+	if (!window->has_timestamp || window->next_frame < time ||
+	    window->frame_duration == 0) {
+		window->paint(window, time);
+		wl_surface_attach(window->surface, window->back->buffer, 0, 0);
+
+		tmp = window->back;
+		window->back = window->front;
+		window->front = tmp;
+		window->has_timestamp = 1;
+		window->next_frame = time + window->frame_duration;
+	}
+
 	wl_surface_damage(window->surface,
 			  0, 0, window->width, window->height);
-
-	tmp = window->back;
-	window->back = window->front;
-	window->front = tmp;
 
 	if (callback)
 		wl_callback_destroy(callback);
@@ -220,7 +222,7 @@ create_buffer(struct window *window)
 	buffer->buffer =
 		wl_drm_create_planar_buffer(display->drm, name,
 					    window->width, window->height,
-					    WL_BUFFER_FORMAT_YUV420,
+					    WL_DRM_FORMAT_YUV420,
 					    0, window->width,
 					    offset1, window->width / 2,
 					    offset2, window->width / 2);
@@ -239,7 +241,7 @@ create_window(struct display *display, int width, int height)
 	int i;
 
 	for (i = 0; i < display->format_count; i++) {
-		if (display->formats[i] == WL_BUFFER_FORMAT_YUV420)
+		if (display->formats[i] == WL_DRM_FORMAT_YUV420)
 			break;
 	}
 
@@ -372,14 +374,59 @@ destroy_display(struct display *display)
 	free(display);
 }
 
+static struct window *
+parse_header(struct display *display)
+{
+	struct window *window;
+	int width, height, n, d;
+	char buf[256], *p;
+	uint32_t frame_duration;
+
+	fgets(buf, sizeof buf, stdin);
+	if (strncmp(buf, "YUV4MPEG2 ", 10) != 0)
+		return NULL;
+	frame_duration = 0;
+	width = 0;
+	height = 0;
+	for (p = buf + 10; *p; p = strchrnul(p, ' ')) {
+		p++;
+		switch (*p) {
+		case 'C':
+			break;
+		case 'W':
+			width = atoi(p + 1);
+			break;
+		case 'H':
+			height = atoi(p + 1);
+			break;
+		case 'F':
+			sscanf(p + 1, "%d:%d", &n, &d);
+			frame_duration = d * 1000 / n;
+			break;
+		}
+	}
+
+	if (width == 0 || height == 0) {
+		fprintf(stderr, "didn't width or height\n");
+		return NULL;
+	}
+
+	window = create_window(display, width, height);
+	window->frame_duration = frame_duration;
+	window->paint = paint_stdin;
+
+	printf("incoming stream is %dx%d, %d:%d fps (%dms per frame)\n",
+	       width, height, n, d, frame_duration);
+
+	return window;
+}
+
 int
 main(int argc, char **argv)
 {
 	struct display *display;
 	struct window *window;
 	int test_pattern = 1;
-	int width, height;
-	char buf[256];
 
 	if (argc == 2 && strcmp(argv[1], "-") == 0)
 		test_pattern = 0;
@@ -390,24 +437,15 @@ main(int argc, char **argv)
 
 	if (test_pattern) {
 		window = create_window(display, 512, 512);
-		redraw(window, NULL, 0);
+		window->paint = paint_pixels;
 	} else {
-		fgets(buf, sizeof buf, stdin);
-		sscanf(buf, "YUV4MPEG2 C420jpeg W%d H%d", &width, &height);
-		window = create_window(display, width, height);
+		window = parse_header(display);
 	}
 
+	redraw(window, NULL, 0);
 	while (1) {
-		if (test_pattern) {
-			wl_display_flush(display->display);
-			wl_display_iterate(display->display,
-					   WL_DISPLAY_READABLE);
-		} else {
-			read_frame(window);
-			wl_display_flush(display->display);
-			wl_display_roundtrip(display->display);
-		}
-
+		wl_display_flush(display->display);
+		wl_display_iterate(display->display, WL_DISPLAY_READABLE);
 	}
 
 	destroy_window(window);

@@ -701,7 +701,7 @@ main                            (int                    argc,
 
         init_device ();
 
-        fprintf(stdout, "YUV4MPEG2 C420jpeg W640 H480 F30:1 Ip\n");
+        fprintf(stdout, "YUV4MPEG2 C420jpeg W640 H480 Ip\n");
 
         start_capturing ();
 
