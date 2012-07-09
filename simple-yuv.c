@@ -55,11 +55,10 @@ struct display {
 struct buffer {
 	drm_intel_bo *bo;
 	struct wl_buffer *buffer;
-	uint8_t *y;
-	uint8_t *u;
-	uint8_t *v;
+	int offset0, stride0;
+	int offset1, stride1;
+	int offset2, stride2;
 };
-	
 
 struct window {
 	struct display *display;
@@ -70,7 +69,10 @@ struct window {
 
 	struct buffer *front, *back;
 	uint32_t frame_duration, next_frame;
+	uint32_t format;
 	int has_timestamp;
+	unsigned char *y, *u, *v;
+	FILE *source;
 
 	void (*paint)(struct window *window, uint32_t time);
 };
@@ -100,27 +102,28 @@ static const struct wl_shell_surface_listener shell_surface_listener = {
 };
 
 static void
-paint_stdin(struct window *window, uint32_t time)
+paint_source(struct window *window, uint32_t time)
 {
 	int size = window->width * window->height;
 	char buf[256];
 
-	fgets(buf, sizeof buf, stdin);
-	fread(window->back->y, 1, size, stdin);
-	fread(window->back->u, 1, size / 4, stdin);
-	fread(window->back->v, 1, size / 4, stdin);
+	fgets(buf, sizeof buf, window->source);
+	fread(window->y, 1, size, window->source);
+	fread(window->u, 1, size / 4, window->source);
+	fread(window->v, 1, size / 4, window->source);
 }
 
 static void
 paint_pixels(struct window *window, uint32_t time)
 {
+	struct buffer *buffer = window->back;
 	int width = window->width, height = window->height;
 	const int halfh = height / 2;
 	const int halfw = width / 2;
 	int ir, or;
-	uint8_t *y = window->back->y;
-	uint8_t *u = window->back->u;
-	uint8_t *v = window->back->v;
+	uint8_t *y = window->y;
+	uint8_t *u = window->u;
+	uint8_t *v = window->v;
 	int i, x;
 
 	/* squared radii thresholds */
@@ -153,9 +156,79 @@ paint_pixels(struct window *window, uint32_t time)
 
 	for (i = 0; i < halfh; i++) {
 		for (x = 0; x < halfw; x++) {
-			*u++ = i > x + 30 ? 200 : 10;
-			*v++ = i > x - 30 ? 150 : 50;
+			u[i * buffer->stride1 + x] = i > x + 30 ? 200 : 10;
+			v[i * buffer->stride2 + x] = i > x - 30 ? 150 : 50;
 		}
+	}
+}
+
+static void
+convert_to_yuyv(struct window *window)
+{
+	struct buffer *buffer = window->back;
+	unsigned char *y, *u, *v, *yuyv_out, *p;
+	int i, j;
+
+	for (i = 0; i < window->height; i++) {
+		p = buffer->bo->virtual;
+		yuyv_out = p + buffer->offset0 + i * window->back->stride0;
+
+		y = window->y + i * window->width;
+		u = window->u + (i / 2) * window->width / 2;
+		v = window->v + (i / 2) * window->width / 2;
+
+		for (j = 0; j < window->width / 2; j++) {
+			*yuyv_out++ = *y++;
+			*yuyv_out++ = *u++;
+			*yuyv_out++ = *y++;
+			*yuyv_out++ = *v++;
+		}
+	}
+}
+
+static void
+convert_to_nv12(struct window *window)
+{
+	struct buffer *buffer = window->back;
+	unsigned char *u, *v, *uv_out, *p;
+	int i;
+
+	p = buffer->bo->virtual;
+	uv_out = p + buffer->offset1;
+	u = window->u;
+	v = window->v;
+	for (i = 0; i < window->width * window->height / 4; i++) {
+		*uv_out++ = *u++;
+		*uv_out++ = *v++;
+	}
+}
+
+static void
+paint(struct window *window, uint32_t time)
+{
+	struct buffer *buffer = window->back;
+	unsigned char *p = buffer->bo->virtual;
+
+	switch (window->format) {
+	case WL_DRM_FORMAT_YUV420:
+		window->y = p + buffer->offset0;
+		window->u = p + buffer->offset1;
+		window->v = p + buffer->offset2;
+		break;
+	case WL_DRM_FORMAT_NV12:
+		window->y = p + buffer->offset0;
+		break;
+	}
+
+	window->paint(window, time);
+
+	switch (window->format) {
+	case WL_DRM_FORMAT_YUYV:
+		convert_to_yuyv(window);
+		break;
+	case WL_DRM_FORMAT_NV12:
+		convert_to_nv12(window);
+		break;
 	}
 }
 
@@ -169,7 +242,7 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 
 	if (!window->has_timestamp || window->next_frame < time ||
 	    window->frame_duration == 0) {
-		window->paint(window, time);
+		paint(window, time);
 		wl_surface_attach(window->surface, window->back->buffer, 0, 0);
 
 		tmp = window->back;
@@ -200,42 +273,75 @@ align(int value, int size)
 }
 
 struct buffer *
-create_buffer(struct window *window)
+create_buffer(struct window *window, uint32_t format)
 {
 	struct display *display = window->display;
 	struct buffer *buffer;
-	int size, offset1, offset2;
 	uint32_t name;
+	int total;
 
 	buffer = malloc(sizeof *buffer);
+	if (format == WL_DRM_FORMAT_YUYV)
+		buffer->stride0 = window->width * 4;
+	else
+		buffer->stride0 = window->width;
 
-	offset1 = align(window->width * window->height, 4096);
-	offset2 = align(offset1 + window->width * window->height, 4096);
+	buffer->offset0 = 0;
+	total = buffer->stride0 * window->height;
 
-	size = align(offset2 + window->width * window->height, 4096);
+	if (format == WL_DRM_FORMAT_YUV420)
+		buffer->stride1 = window->width / 2;
+	else if (format == WL_DRM_FORMAT_NV12)
+		buffer->stride1 = window->width;
+	else
+		buffer->stride1 = 0;
+
+	buffer->offset1 = align(total, 4096);
+	total = buffer->offset1 + buffer->stride1 * window->height / 2;
+
+	if (format == WL_DRM_FORMAT_YUV420)
+		buffer->stride2 = window->width / 2;
+	else
+		buffer->stride2 = 0;
+
+	buffer->offset2 = align(total, 4096);
+	total = buffer->offset2 + buffer->stride2 * window->height / 2;
+
 	buffer->bo =
-		drm_intel_bo_alloc(display->bufmgr, "simple-yuv", size, 0);
+		drm_intel_bo_alloc(display->bufmgr, "simple-yuv", total, 0);
 	drm_intel_gem_bo_map_gtt(buffer->bo);
 
 	drm_intel_bo_flink(buffer->bo, &name);
 
-	buffer->buffer =
-		wl_drm_create_planar_buffer(display->drm, name,
-					    window->width, window->height,
-					    WL_DRM_FORMAT_YUV420,
-					    0, window->width,
-					    offset1, window->width / 2,
-					    offset2, window->width / 2);
-
-	buffer->y = buffer->bo->virtual;
-	buffer->u = buffer->y + offset1;
-	buffer->v = buffer->y + offset2;
+	switch (format) {
+	case WL_DRM_FORMAT_YUV420:
+	case WL_DRM_FORMAT_NV12:
+		buffer->buffer =
+			wl_drm_create_planar_buffer(display->drm, name,
+						    window->width,
+						    window->height,
+						    format,
+						    buffer->offset0,
+						    buffer->stride0,
+						    buffer->offset1,
+						    buffer->stride1,
+						    buffer->offset2,
+						    buffer->stride2);
+		break;
+	case WL_DRM_FORMAT_YUYV:
+		buffer->buffer =
+			wl_drm_create_buffer(display->drm, name,
+					     window->width, window->height,
+					     buffer->stride0,
+					     WL_DRM_FORMAT_YUYV);
+		break;
+	}
 
 	return buffer;
 }
 
 static struct window *
-create_window(struct display *display, int width, int height)
+create_window(struct display *display, uint32_t format, int width, int height)
 {
 	struct window *window;
 	int i;
@@ -253,6 +359,7 @@ create_window(struct display *display, int width, int height)
 
 	window = malloc(sizeof *window);
 
+	window->format = format;
 	window->callback = NULL;
 	window->display = display;
 	window->width = width;
@@ -267,8 +374,22 @@ create_window(struct display *display, int width, int height)
 
 	wl_shell_surface_set_toplevel(window->shell_surface);
 
-	window->front = create_buffer(window);
-	window->back = create_buffer(window);
+	window->front = create_buffer(window, window->format);
+	window->back = create_buffer(window, window->format);
+
+	switch (window->format) {
+	case WL_DRM_FORMAT_YUV420:
+		break;
+	case WL_DRM_FORMAT_YUYV:
+		window->y = malloc(window->width * window->height);
+		window->u = malloc(window->width * window->height / 4);
+		window->v = malloc(window->width * window->height / 4);
+		break;
+	case WL_DRM_FORMAT_NV12:
+		window->u = malloc(window->width * window->height / 4);
+		window->v = malloc(window->width * window->height / 4);
+		break;
+	}
 
 	return window;
 }
@@ -375,14 +496,14 @@ destroy_display(struct display *display)
 }
 
 static struct window *
-parse_header(struct display *display)
+parse_header(struct display *display, uint32_t format, FILE *source)
 {
 	struct window *window;
 	int width, height, n, d;
 	char buf[256], *p;
 	uint32_t frame_duration;
 
-	fgets(buf, sizeof buf, stdin);
+	fgets(buf, sizeof buf, source);
 	if (strncmp(buf, "YUV4MPEG2 ", 10) != 0)
 		return NULL;
 	frame_duration = 0;
@@ -411,9 +532,10 @@ parse_header(struct display *display)
 		return NULL;
 	}
 
-	window = create_window(display, width, height);
+	window = create_window(display, format, width, height);
+	window->source = source;
 	window->frame_duration = frame_duration;
-	window->paint = paint_stdin;
+	window->paint = paint_source;
 
 	printf("incoming stream is %dx%d, %d:%d fps (%dms per frame)\n",
 	       width, height, n, d, frame_duration);
@@ -426,20 +548,30 @@ main(int argc, char **argv)
 {
 	struct display *display;
 	struct window *window;
-	int test_pattern = 1;
+	uint32_t format = WL_DRM_FORMAT_YUV420;
+	FILE *source = NULL;
+	int i;
 
-	if (argc == 2 && strcmp(argv[1], "-") == 0)
-		test_pattern = 0;
+	for (i = 1; i < argc; i++) {
+		if (strcmp(argv[i], "--yuyv") == 0)
+			format = WL_DRM_FORMAT_YUYV;
+		if (strcmp(argv[i], "--yuv") == 0)
+			format = WL_DRM_FORMAT_YUV420;
+		if (strcmp(argv[i], "--nv12") == 0)
+			format = WL_DRM_FORMAT_NV12;
+		if (strcmp(argv[i], "-") == 0)
+			source = stdin;
+	}
 
 	display = create_display();
 	while (!display->authenticated)
 		wl_display_roundtrip(display->display);
 
-	if (test_pattern) {
-		window = create_window(display, 512, 512);
-		window->paint = paint_pixels;
+	if (source) {
+		window = parse_header(display, format, source);
 	} else {
-		window = parse_header(display);
+		window = create_window(display, format, 512, 512);
+		window->paint = paint_pixels;
 	}
 
 	redraw(window, NULL, 0);
