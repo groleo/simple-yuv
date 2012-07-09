@@ -116,7 +116,6 @@ paint_source(struct window *window, uint32_t time)
 static void
 paint_pixels(struct window *window, uint32_t time)
 {
-	struct buffer *buffer = window->back;
 	int width = window->width, height = window->height;
 	const int halfh = height / 2;
 	const int halfw = width / 2;
@@ -156,8 +155,8 @@ paint_pixels(struct window *window, uint32_t time)
 
 	for (i = 0; i < halfh; i++) {
 		for (x = 0; x < halfw; x++) {
-			u[i * buffer->stride1 + x] = i > x + 30 ? 200 : 10;
-			v[i * buffer->stride2 + x] = i > x - 30 ? 150 : 50;
+			*u++ = i > x + 30 ? 200 : 10;
+			*v++ = i > x - 30 ? 150 : 50;
 		}
 	}
 }
