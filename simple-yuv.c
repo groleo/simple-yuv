@@ -33,6 +33,7 @@
 #include <sys/mman.h>
 #include <signal.h>
 
+#include <linux/input.h>
 #include <libdrm/intel_bufmgr.h>
 #include <xf86drm.h>
 #include <wayland-client.h>
@@ -44,6 +45,8 @@ struct display {
 	struct wl_compositor *compositor;
 	struct wl_shell *shell;
 	struct wl_drm *drm;
+	struct wl_seat *seat;
+	struct wl_keyboard *keyboard;
 	drm_intel_bufmgr *bufmgr;
 	int fd;
 	int authenticated;
@@ -445,6 +448,68 @@ static const struct wl_drm_listener drm_listener = {
 };
 
 static void
+keyboard_handle_keymap(void *data, struct wl_keyboard *keyboard,
+		       uint32_t format, int fd, uint32_t size)
+{
+}
+
+static void
+keyboard_handle_enter(void *data, struct wl_keyboard *keyboard,
+		      uint32_t serial, struct wl_surface *surface,
+		      struct wl_array *keys)
+{
+}
+
+static void
+keyboard_handle_leave(void *data, struct wl_keyboard *keyboard,
+		      uint32_t serial, struct wl_surface *surface)
+{
+}
+
+static void
+keyboard_handle_key(void *data, struct wl_keyboard *keyboard,
+		    uint32_t serial, uint32_t time, uint32_t key,
+		    uint32_t state_w)
+{
+	switch (key) {
+	case KEY_ESC:
+		exit(1);
+	}
+}
+
+static void
+keyboard_handle_modifiers(void *data, struct wl_keyboard *keyboard,
+			  uint32_t serial, uint32_t mods_depressed,
+			  uint32_t mods_latched, uint32_t mods_locked,
+			  uint32_t group)
+{
+}
+
+static const struct wl_keyboard_listener keyboard_listener = {
+	keyboard_handle_keymap,
+	keyboard_handle_enter,
+	keyboard_handle_leave,
+	keyboard_handle_key,
+	keyboard_handle_modifiers,
+};
+
+static void
+seat_handle_capabilities(void *data, struct wl_seat *seat,
+			 enum wl_seat_capability caps)
+{
+	struct display *d = data;
+
+	if (caps & WL_SEAT_CAPABILITY_KEYBOARD) {
+		d->keyboard = wl_seat_get_keyboard(seat);
+		wl_keyboard_add_listener(d->keyboard, &keyboard_listener, d);
+	}
+}
+
+static const struct wl_seat_listener seat_listener = {
+	seat_handle_capabilities,
+};
+
+static void
 display_handle_global(struct wl_display *display, uint32_t id,
 		      const char *interface, uint32_t version, void *data)
 {
@@ -458,6 +523,9 @@ display_handle_global(struct wl_display *display, uint32_t id,
 	} else if (strcmp(interface, "wl_drm") == 0) {
 		d->drm = wl_display_bind(display, id, &wl_drm_interface);
 		wl_drm_add_listener(d->drm, &drm_listener, d);
+	} else if (strcmp(interface, "wl_seat") == 0) {
+		d->seat = wl_display_bind(display, id, &wl_seat_interface);
+		wl_seat_add_listener(d->seat, &seat_listener, d);
 	}
 }
 
@@ -542,6 +610,14 @@ parse_header(struct display *display, uint32_t format, FILE *source)
 	return window;
 }
 
+static void
+fullscreen_window(struct window *window)
+{
+	wl_shell_surface_set_fullscreen(window->shell_surface,
+					WL_SHELL_SURFACE_FULLSCREEN_METHOD_SCALE,
+					0, NULL);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -549,7 +625,7 @@ main(int argc, char **argv)
 	struct window *window;
 	uint32_t format = WL_DRM_FORMAT_YUV420;
 	FILE *source = NULL;
-	int i;
+	int i, fullscreen = 0;
 
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--yuyv") == 0)
@@ -560,6 +636,8 @@ main(int argc, char **argv)
 			format = WL_DRM_FORMAT_NV12;
 		if (strcmp(argv[i], "-") == 0)
 			source = stdin;
+		if (strcmp(argv[i], "-f") == 0)
+			fullscreen = 1;
 	}
 
 	display = create_display();
@@ -572,6 +650,9 @@ main(int argc, char **argv)
 		window = create_window(display, format, 512, 512);
 		window->paint = paint_pixels;
 	}
+
+	if (fullscreen)
+		fullscreen_window(window);
 
 	redraw(window, NULL, 0);
 	while (1) {
