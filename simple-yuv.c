@@ -53,6 +53,7 @@ struct display {
 	uint32_t formats[10];
 	int format_count;
 	uint32_t mask;
+	struct wl_surface *keyboard_focus;
 };
 
 struct buffer {
@@ -69,6 +70,7 @@ struct window {
 	struct wl_surface *surface;
 	struct wl_shell_surface *shell_surface;
 	struct wl_callback *callback;
+	int fullscreen;
 
 	struct buffer *front, *back;
 	uint32_t frame_duration, next_frame;
@@ -366,7 +368,9 @@ create_window(struct display *display, uint32_t format, int width, int height)
 	window->display = display;
 	window->width = width;
 	window->height = height;
+	window->fullscreen = 0;
 	window->surface = wl_compositor_create_surface(display->compositor);
+	wl_surface_set_user_data(window->surface, window);
 	window->shell_surface = wl_shell_get_shell_surface(display->shell,
 							   window->surface);
 
@@ -458,22 +462,43 @@ keyboard_handle_enter(void *data, struct wl_keyboard *keyboard,
 		      uint32_t serial, struct wl_surface *surface,
 		      struct wl_array *keys)
 {
+	struct display *d = data;
+
+	d->keyboard_focus = surface;
 }
 
 static void
 keyboard_handle_leave(void *data, struct wl_keyboard *keyboard,
 		      uint32_t serial, struct wl_surface *surface)
 {
+	struct display *d = data;
+
+	d->keyboard_focus = NULL;
 }
 
 static void
 keyboard_handle_key(void *data, struct wl_keyboard *keyboard,
 		    uint32_t serial, uint32_t time, uint32_t key,
-		    uint32_t state_w)
+		    uint32_t state)
 {
+	struct display *d = data;
+	struct window *window = wl_surface_get_user_data(d->keyboard_focus);
+
+	if (state != WL_KEYBOARD_KEY_STATE_PRESSED)
+		return;
+
 	switch (key) {
 	case KEY_ESC:
 		exit(1);
+	case KEY_F11:
+		if (window->fullscreen)
+			wl_shell_surface_set_toplevel(window->shell_surface);
+		else
+			wl_shell_surface_set_fullscreen(window->shell_surface,
+							WL_SHELL_SURFACE_FULLSCREEN_METHOD_SCALE,
+							0, NULL);
+		window->fullscreen = !window->fullscreen;
+		break;
 	}
 }
 
@@ -613,6 +638,7 @@ parse_header(struct display *display, uint32_t format, FILE *source)
 static void
 fullscreen_window(struct window *window)
 {
+	window->fullscreen = 1;
 	wl_shell_surface_set_fullscreen(window->shell_surface,
 					WL_SHELL_SURFACE_FULLSCREEN_METHOD_SCALE,
 					0, NULL);
