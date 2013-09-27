@@ -42,6 +42,7 @@
 
 struct display {
 	struct wl_display *display;
+	struct wl_registry *registry;
 	struct wl_compositor *compositor;
 	struct wl_shell *shell;
 	struct wl_drm *drm;
@@ -264,6 +265,8 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 
 	window->callback = wl_surface_frame(window->surface);
 	wl_callback_add_listener(window->callback, &frame_listener, window);
+
+	wl_surface_commit(window->surface);
 }
 
 static const struct wl_callback_listener frame_listener = {
@@ -535,24 +538,39 @@ static const struct wl_seat_listener seat_listener = {
 };
 
 static void
-display_handle_global(struct wl_display *display, uint32_t id,
-		      const char *interface, uint32_t version, void *data)
+registry_handle_global(void *data, struct wl_registry *registry, uint32_t id,
+		       const char *interface, uint32_t version)
 {
 	struct display *d = data;
 
 	if (strcmp(interface, "wl_compositor") == 0) {
 		d->compositor =
-			wl_display_bind(display, id, &wl_compositor_interface);
+			wl_registry_bind(d->registry, id,
+					 &wl_compositor_interface, 1);
 	} else if (strcmp(interface, "wl_shell") == 0) {
-		d->shell = wl_display_bind(display, id, &wl_shell_interface);
+		d->shell = wl_registry_bind(d->registry, id, 
+					   &wl_shell_interface, 1);
 	} else if (strcmp(interface, "wl_drm") == 0) {
-		d->drm = wl_display_bind(display, id, &wl_drm_interface);
+		d->drm = wl_registry_bind(d->registry, id,
+					  &wl_drm_interface, 1);
 		wl_drm_add_listener(d->drm, &drm_listener, d);
 	} else if (strcmp(interface, "wl_seat") == 0) {
-		d->seat = wl_display_bind(display, id, &wl_seat_interface);
+		d->seat = wl_registry_bind(d->registry,
+					   id, &wl_seat_interface, 1);
 		wl_seat_add_listener(d->seat, &seat_listener, d);
 	}
 }
+
+static void
+registry_handle_global_remove(void *data, struct wl_registry *registry,
+			      uint32_t name)
+{
+}
+
+static const struct wl_registry_listener registry_listener = {
+	registry_handle_global,
+	registry_handle_global_remove
+};
 
 static struct display *
 create_display(void)
@@ -563,9 +581,9 @@ create_display(void)
 	memset(display, 0, sizeof *display);
 	display->display = wl_display_connect(NULL);
 	assert(display->display);
-
-	wl_display_add_global_listener(display->display,
-				       display_handle_global, display);
+	display->registry = wl_display_get_registry(display->display);
+	wl_registry_add_listener(display->registry,
+				 &registry_listener, display);
 
 	return display;
 }
@@ -681,10 +699,8 @@ main(int argc, char **argv)
 		fullscreen_window(window);
 
 	redraw(window, NULL, 0);
-	while (1) {
-		wl_display_flush(display->display);
-		wl_display_iterate(display->display, WL_DISPLAY_READABLE);
-	}
+	while (1)
+		wl_display_dispatch(display->display);
 
 	destroy_window(window);
 	destroy_display(display);
