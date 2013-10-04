@@ -39,7 +39,7 @@ struct window {
 	unsigned char *y, *u, *v;
 	FILE *source;
 
-	void (*paint)(struct window *window, uint32_t time);
+	int (*paint)(struct window *window, uint32_t time);
 };
 
 struct buffer* buffer_alloc(struct display*, struct window*, struct buffer*, uint32_t format);

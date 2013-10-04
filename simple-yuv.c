@@ -37,6 +37,7 @@
 #include <wayland-client.h>
 
 #include "simple-yuv.h"
+int g_run=1;
 
 static void
 handle_ping(void *data, struct wl_shell_surface *shell_surface,
@@ -62,19 +63,24 @@ static const struct wl_shell_surface_listener shell_surface_listener = {
 	handle_popup_done
 };
 
-static void
+static int
 paint_source(struct window *window, uint32_t time)
 {
 	int size = window->width * window->height;
 	char buf[256];
 
-	fgets(buf, sizeof buf, window->source);
-	fread(window->y, 1, size, window->source);
-	fread(window->u, 1, size / 4, window->source);
-	fread(window->v, 1, size / 4, window->source);
+	if (NULL==fgets(buf, sizeof buf, window->source)
+	|| size!=fread(window->y, 1, size, window->source)
+	|| size/4!=fread(window->u, 1, size / 4, window->source)
+	|| size/4!=fread(window->v, 1, size / 4, window->source)) {
+		fprintf(stderr, "error while reading yuv stream\n");
+		g_run=0;
+		return -1;
+	}
+	return 0;
 }
 
-static void
+static int
 paint_pixels(struct window *window, uint32_t time)
 {
 	int width = window->width, height = window->height;
@@ -120,6 +126,7 @@ paint_pixels(struct window *window, uint32_t time)
 			*v++ = i > x - 30 ? 150 : 50;
 		}
 	}
+	return 0;
 }
 
 static void
@@ -163,7 +170,7 @@ convert_to_nv12(struct window *window)
 	}
 }
 
-static void
+static int
 paint(struct window *window, uint32_t time)
 {
 	struct buffer *buffer = window->back;
@@ -180,7 +187,8 @@ paint(struct window *window, uint32_t time)
 		break;
 	}
 
-	window->paint(window, time);
+	if (window->paint(window, time))
+		return -1;
 
 	switch (window->format) {
 	case fourcc_code('Y','U','Y','V'):
@@ -190,6 +198,7 @@ paint(struct window *window, uint32_t time)
 		convert_to_nv12(window);
 		break;
 	}
+	return 0;
 }
 
 static const struct wl_callback_listener frame_listener;
@@ -202,7 +211,8 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 
 	if (!window->has_timestamp || window->next_frame < time ||
 	    window->frame_duration == 0) {
-		paint(window, time);
+		if (paint(window, time))
+			return;
 		wl_surface_attach(window->surface, window->back->buffer, 0, 0);
 
 		tmp = window->back;
@@ -234,8 +244,6 @@ create_buffer(struct window *window, uint32_t format)
 {
 	struct display *display = window->display;
 	struct buffer *buffer;
-	uint32_t name;
-	int total;
 
 	buffer = malloc(sizeof *buffer);
 	buffer_alloc(display, window, buffer, format);
@@ -468,12 +476,14 @@ parse_header(struct display *display, uint32_t format, FILE *source)
 	uint32_t frame_duration;
 
 	fgets(buf, sizeof buf, source);
-	if (strncmp(buf, "YUV4MPEG2 ", 10) != 0)
+	if (strncmp(buf, "YUV4MPEG2 ", 10) != 0) {
+		fprintf(stderr, "yuv stream: missing YUV4MPEG2 header\n");
 		return NULL;
+	}
 	frame_duration = 0;
 	width = 0;
 	height = 0;
-	for (p = buf + 10; *p; p = strchrnul(p, ' ')) {
+	for (p = buf + 9; *p; p = strchrnul(p, ' ')) {
 		p++;
 		switch (*p) {
 		case 'C':
@@ -491,8 +501,8 @@ parse_header(struct display *display, uint32_t format, FILE *source)
 		}
 	}
 
-	if (width == 0 || height == 0) {
-		fprintf(stderr, "didn't width or height\n");
+	if (width <= 0 || height <= 0) {
+		fprintf(stderr, "yuv stream: no width(%d) or height(%d)\n",width,height);
 		return NULL;
 	}
 
@@ -548,13 +558,20 @@ main(int argc, char **argv)
 		window = create_window(display, format, 512, 512);
 		window->paint = paint_pixels;
 	}
+	if (window == NULL) {
+		fprintf(stderr,"error, window is NULL\n");
+		destroy_display(display);
+		exit(1);
+	}
 
 	if (fullscreen)
 		fullscreen_window(window);
 
 	redraw(window, NULL, 0);
-	while (1)
-		wl_display_dispatch(display->display);
+	int ret=0;
+	while (g_run && ret!=-1) {
+		ret = wl_display_dispatch(display->display);
+	}
 
 	destroy_window(window);
 	destroy_display(display);
