@@ -10,7 +10,7 @@ simple_yuv_LDADD = $(WAYLAND_DEPS_LIBS)
 
 
 if ENABLE_INTEL_DRM
-simple_yuv_SOURCES += wayland-drm-protocol.c
+simple_yuv_SOURCES += wayland-drm-protocol.c drm-module.c
 simple_yuv_CFLAGS += $(INTEL_DRM_CFLAGS)
 simple_yuv_LDADD += $(INTEL_DRM_LIBS)
 endif

@@ -34,11 +34,8 @@
 #include <signal.h>
 
 #include <linux/input.h>
-#include <libdrm/intel_bufmgr.h>
-#include <xf86drm.h>
 #include <wayland-client.h>
 
-#include "wayland-drm-client-protocol.h"
 #include "simple-yuv.h"
 
 static void
@@ -133,7 +130,7 @@ convert_to_yuyv(struct window *window)
 	int i, j;
 
 	for (i = 0; i < window->height; i++) {
-		p = buffer->bo->virtual;
+		p = buffer_mmap(window->display,buffer);
 		yuyv_out = p + buffer->offset0 + i * window->back->stride0;
 
 		y = window->y + i * window->width;
@@ -156,7 +153,7 @@ convert_to_nv12(struct window *window)
 	unsigned char *u, *v, *uv_out, *p;
 	int i;
 
-	p = buffer->bo->virtual;
+	p = buffer_mmap(window->display,buffer);
 	uv_out = p + buffer->offset1;
 	u = window->u;
 	v = window->v;
@@ -170,7 +167,7 @@ static void
 paint(struct window *window, uint32_t time)
 {
 	struct buffer *buffer = window->back;
-	unsigned char *p = buffer->bo->virtual;
+	unsigned char *p = buffer_mmap(window->display,buffer);
 
 	switch (window->format) {
 	case fourcc_code('Y','U','1','2'):
@@ -231,11 +228,6 @@ static const struct wl_callback_listener frame_listener = {
 	redraw
 };
 
-static inline int
-align(int value, int size)
-{
-	return (value + size - 1) & ~(size - 1);
-}
 
 struct buffer *
 create_buffer(struct window *window, uint32_t format)
@@ -246,61 +238,7 @@ create_buffer(struct window *window, uint32_t format)
 	int total;
 
 	buffer = malloc(sizeof *buffer);
-	if (format == fourcc_code('Y','U','Y','V'))
-		buffer->stride0 = window->width * 4;
-	else
-		buffer->stride0 = window->width;
-
-	buffer->offset0 = 0;
-	total = buffer->stride0 * window->height;
-
-	if (format == fourcc_code('Y','U','1','2'))
-		buffer->stride1 = window->width / 2;
-	else if (format == fourcc_code('N','V','1','2'))
-		buffer->stride1 = window->width;
-	else
-		buffer->stride1 = 0;
-
-	buffer->offset1 = align(total, 4096);
-	total = buffer->offset1 + buffer->stride1 * window->height / 2;
-
-	if (format == fourcc_code('Y','U','1','2'))
-		buffer->stride2 = window->width / 2;
-	else
-		buffer->stride2 = 0;
-
-	buffer->offset2 = align(total, 4096);
-	total = buffer->offset2 + buffer->stride2 * window->height / 2;
-
-	buffer->bo =
-		drm_intel_bo_alloc(display->bufmgr, "simple-yuv", total, 0);
-	drm_intel_gem_bo_map_gtt(buffer->bo);
-
-	drm_intel_bo_flink(buffer->bo, &name);
-
-	switch (format) {
-	case fourcc_code('Y','U','1','2'):
-	case fourcc_code('N','V','1','2'):
-		buffer->buffer =
-			wl_drm_create_planar_buffer(display->drm, name,
-						    window->width,
-						    window->height,
-						    format,
-						    buffer->offset0,
-						    buffer->stride0,
-						    buffer->offset1,
-						    buffer->stride1,
-						    buffer->offset2,
-						    buffer->stride2);
-		break;
-	case fourcc_code('Y','U','Y','V'):
-		buffer->buffer =
-			wl_drm_create_buffer(display->drm, name,
-					     window->width, window->height,
-					     buffer->stride0,
-					     WL_DRM_FORMAT_YUYV);
-		break;
-	}
+	buffer_alloc(display, window, buffer, format);
 
 	return buffer;
 }
@@ -324,6 +262,7 @@ create_window(struct display *display, uint32_t format, int width, int height)
 
 	window = malloc(sizeof *window);
 
+	window->has_timestamp = 0;
 	window->format = format;
 	window->callback = NULL;
 	window->display = display;
@@ -371,46 +310,6 @@ destroy_window(struct window *window)
 	wl_surface_destroy(window->surface);
 	free(window);
 }
-
-static void
-drm_handle_device(void *data, struct wl_drm *drm, const char *device)
-{
-	struct display *d = data;
-	drm_magic_t magic;
-
-	d->fd = open(device, O_RDWR | O_CLOEXEC);
-	if (d->fd == -1) {
-		fprintf(stderr, "could not open %s: %m\n", device);
-		exit(-1);
-	}
-
-	drmGetMagic(d->fd, &magic);
-	wl_drm_authenticate(d->drm, magic);
-}
-
-static void
-drm_handle_format(void *data, struct wl_drm *drm, uint32_t format)
-{
-   struct display *d = data;
-
-   d->formats[d->format_count++] = format;
-}
-
-static void
-drm_handle_authenticated(void *data, struct wl_drm *drm)
-{
-   struct display *d = data;
-
-   d->authenticated = 1;
-
-   d->bufmgr = drm_intel_bufmgr_gem_init(d->fd, 4096);
-}
-
-static const struct wl_drm_listener drm_listener = {
-	drm_handle_device,
-	drm_handle_format,
-	drm_handle_authenticated
-};
 
 static void
 keyboard_handle_keymap(void *data, struct wl_keyboard *keyboard,
@@ -509,9 +408,7 @@ registry_handle_global(void *data, struct wl_registry *registry, uint32_t id,
 		d->shell = wl_registry_bind(d->registry, id, 
 					   &wl_shell_interface, 1);
 	} else if (strcmp(interface, "wl_drm") == 0) {
-		d->drm = wl_registry_bind(d->registry, id,
-					  &wl_drm_interface, 1);
-		wl_drm_add_listener(d->drm, &drm_listener, d);
+		add_listeners(d,id);
 	} else if (strcmp(interface, "wl_seat") == 0) {
 		d->seat = wl_registry_bind(d->registry,
 					   id, &wl_seat_interface, 1);
@@ -549,8 +446,7 @@ create_display(void)
 static void
 destroy_display(struct display *display)
 {
-	if (display->drm)
-		wl_drm_destroy(display->drm);
+	module_destroy_display(display);
 
 	if (display->shell)
 		wl_shell_destroy(display->shell);
