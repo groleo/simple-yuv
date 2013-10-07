@@ -173,12 +173,12 @@ paint(struct window *window, uint32_t time)
 	unsigned char *p = buffer->bo->virtual;
 
 	switch (window->format) {
-	case WL_DRM_FORMAT_YUV420:
+	case fourcc_code('Y','U','1','2'):
 		window->y = p + buffer->offset0;
 		window->u = p + buffer->offset1;
 		window->v = p + buffer->offset2;
 		break;
-	case WL_DRM_FORMAT_NV12:
+	case fourcc_code('N','V','1','2'):
 		window->y = p + buffer->offset0;
 		break;
 	}
@@ -186,10 +186,10 @@ paint(struct window *window, uint32_t time)
 	window->paint(window, time);
 
 	switch (window->format) {
-	case WL_DRM_FORMAT_YUYV:
+	case fourcc_code('Y','U','Y','V'):
 		convert_to_yuyv(window);
 		break;
-	case WL_DRM_FORMAT_NV12:
+	case fourcc_code('N','V','1','2'):
 		convert_to_nv12(window);
 		break;
 	}
@@ -246,7 +246,7 @@ create_buffer(struct window *window, uint32_t format)
 	int total;
 
 	buffer = malloc(sizeof *buffer);
-	if (format == WL_DRM_FORMAT_YUYV)
+	if (format == fourcc_code('Y','U','Y','V'))
 		buffer->stride0 = window->width * 4;
 	else
 		buffer->stride0 = window->width;
@@ -254,9 +254,9 @@ create_buffer(struct window *window, uint32_t format)
 	buffer->offset0 = 0;
 	total = buffer->stride0 * window->height;
 
-	if (format == WL_DRM_FORMAT_YUV420)
+	if (format == fourcc_code('Y','U','1','2'))
 		buffer->stride1 = window->width / 2;
-	else if (format == WL_DRM_FORMAT_NV12)
+	else if (format == fourcc_code('N','V','1','2'))
 		buffer->stride1 = window->width;
 	else
 		buffer->stride1 = 0;
@@ -264,7 +264,7 @@ create_buffer(struct window *window, uint32_t format)
 	buffer->offset1 = align(total, 4096);
 	total = buffer->offset1 + buffer->stride1 * window->height / 2;
 
-	if (format == WL_DRM_FORMAT_YUV420)
+	if (format == fourcc_code('Y','U','1','2'))
 		buffer->stride2 = window->width / 2;
 	else
 		buffer->stride2 = 0;
@@ -279,8 +279,8 @@ create_buffer(struct window *window, uint32_t format)
 	drm_intel_bo_flink(buffer->bo, &name);
 
 	switch (format) {
-	case WL_DRM_FORMAT_YUV420:
-	case WL_DRM_FORMAT_NV12:
+	case fourcc_code('Y','U','1','2'):
+	case fourcc_code('N','V','1','2'):
 		buffer->buffer =
 			wl_drm_create_planar_buffer(display->drm, name,
 						    window->width,
@@ -293,7 +293,7 @@ create_buffer(struct window *window, uint32_t format)
 						    buffer->offset2,
 						    buffer->stride2);
 		break;
-	case WL_DRM_FORMAT_YUYV:
+	case fourcc_code('Y','U','Y','V'):
 		buffer->buffer =
 			wl_drm_create_buffer(display->drm, name,
 					     window->width, window->height,
@@ -312,7 +312,7 @@ create_window(struct display *display, uint32_t format, int width, int height)
 	int i;
 
 	for (i = 0; i < display->format_count; i++) {
-		if (display->formats[i] == WL_DRM_FORMAT_YUV420)
+		if (display->formats[i] == fourcc_code('Y','U','1','2'))
 			break;
 	}
 
@@ -345,14 +345,14 @@ create_window(struct display *display, uint32_t format, int width, int height)
 	window->back = create_buffer(window, window->format);
 
 	switch (window->format) {
-	case WL_DRM_FORMAT_YUV420:
+	case fourcc_code('Y','U','1','2'):
 		break;
-	case WL_DRM_FORMAT_YUYV:
+	case fourcc_code('Y','U','Y','V'):
 		window->y = malloc(window->width * window->height);
 		window->u = malloc(window->width * window->height / 4);
 		window->v = malloc(window->width * window->height / 4);
 		break;
-	case WL_DRM_FORMAT_NV12:
+	case fourcc_code('N','V','1','2'):
 		window->u = malloc(window->width * window->height / 4);
 		window->v = malloc(window->width * window->height / 4);
 		break;
@@ -625,17 +625,17 @@ main(int argc, char **argv)
 {
 	struct display *display;
 	struct window *window;
-	uint32_t format = WL_DRM_FORMAT_YUV420;
+	uint32_t format = fourcc_code('Y','U','1','2');
 	FILE *source = NULL;
 	int i, fullscreen = 0;
 
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--yuyv") == 0)
-			format = WL_DRM_FORMAT_YUYV;
+			format = fourcc_code('Y','U','Y','V');
 		if (strcmp(argv[i], "--yuv") == 0)
-			format = WL_DRM_FORMAT_YUV420;
+			format = fourcc_code('Y','U','1','2');
 		if (strcmp(argv[i], "--nv12") == 0)
-			format = WL_DRM_FORMAT_NV12;
+			format = fourcc_code('N','V','1','2');
 		if (strcmp(argv[i], "-") == 0)
 			source = stdin;
 		if (strcmp(argv[i], "-f") == 0)

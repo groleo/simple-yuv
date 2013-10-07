@@ -44,4 +44,7 @@ struct window {
 	void (*paint)(struct window *window, uint32_t time);
 };
 
+#define fourcc_code(a,b,c,d) ((uint32_t)(a) | ((uint32_t)(b) << 8) | \
+			      ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
+
 #endif /* _SIMPLE_YUV_H_ */
