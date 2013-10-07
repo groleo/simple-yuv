@@ -66,6 +66,7 @@ static const struct wl_shell_surface_listener shell_surface_listener = {
 static int
 paint_source(struct window *window, uint32_t time)
 {
+	printf(" > %s %dx%d\n",__func__,window->width,window->height);
 	int size = window->width * window->height;
 	char buf[256];
 
@@ -77,12 +78,15 @@ paint_source(struct window *window, uint32_t time)
 		g_run=0;
 		return -1;
 	}
+	printf(" < %s\n",__func__);
 	return 0;
 }
 
 static int
 paint_pixels(struct window *window, uint32_t time)
 {
+	printf(" > %s\n",__func__);
+
 	int width = window->width, height = window->height;
 	const int halfh = height / 2;
 	const int halfw = width / 2;
@@ -130,14 +134,13 @@ paint_pixels(struct window *window, uint32_t time)
 }
 
 static void
-convert_to_yuyv(struct window *window)
+convert_to_yuyv(struct window *window, unsigned char *p)
 {
 	struct buffer *buffer = window->back;
-	unsigned char *y, *u, *v, *yuyv_out, *p;
+	unsigned char *y, *u, *v, *yuyv_out;
 	int i, j;
 
 	for (i = 0; i < window->height; i++) {
-		p = buffer_mmap(window->display,buffer);
 		yuyv_out = p + buffer->offset0 + i * window->back->stride0;
 
 		y = window->y + i * window->width;
@@ -154,13 +157,12 @@ convert_to_yuyv(struct window *window)
 }
 
 static void
-convert_to_nv12(struct window *window)
+convert_to_nv12(struct window *window, unsigned char *p)
 {
 	struct buffer *buffer = window->back;
-	unsigned char *u, *v, *uv_out, *p;
+	unsigned char *u, *v, *uv_out;
 	int i;
 
-	p = buffer_mmap(window->display,buffer);
 	uv_out = p + buffer->offset1;
 	u = window->u;
 	v = window->v;
@@ -173,8 +175,11 @@ convert_to_nv12(struct window *window)
 static int
 paint(struct window *window, uint32_t time)
 {
+	printf(" > %s\n",__func__);
 	struct buffer *buffer = window->back;
+
 	unsigned char *p = buffer_mmap(window->display,buffer);
+	printf(" 0 %s\n",__func__);
 
 	switch (window->format) {
 	case fourcc_code('Y','U','1','2'):
@@ -183,21 +188,26 @@ paint(struct window *window, uint32_t time)
 		window->v = p + buffer->offset2;
 		break;
 	case fourcc_code('N','V','1','2'):
+		printf(" 1.1 %s\n",__func__);
 		window->y = p + buffer->offset0;
+		printf(" 1.2 %s\n",__func__);
 		break;
 	}
 
 	if (window->paint(window, time))
 		return -1;
+	printf(" 1 %s\n",__func__);
 
 	switch (window->format) {
 	case fourcc_code('Y','U','Y','V'):
-		convert_to_yuyv(window);
+		convert_to_yuyv(window, p);
 		break;
 	case fourcc_code('N','V','1','2'):
-		convert_to_nv12(window);
+		convert_to_nv12(window, p);
 		break;
 	}
+	buffer_munmap(window->display,buffer);
+	printf(" < %s\n",__func__);
 	return 0;
 }
 
@@ -208,30 +218,39 @@ redraw(void *data, struct wl_callback *callback, uint32_t time)
 {
 	struct window *window = data;
 	struct buffer *tmp;
+	printf(" > %s time:%u\n",__func__, time);
 
-	if (!window->has_timestamp || window->next_frame < time ||
-	    window->frame_duration == 0) {
+	if (!window->has_timestamp
+	||  window->next_frame < time
+	||  window->frame_duration == 0) {
+		printf(" 0 %s\n",__func__);
 		if (paint(window, time))
 			return;
-		wl_surface_attach(window->surface, window->back->buffer, 0, 0);
-
+		printf(" 1 %s\n",__func__);
+		wl_surface_attach(window->surface, window->front->buffer, 0, 0);
 		tmp = window->back;
 		window->back = window->front;
 		window->front = tmp;
 		window->has_timestamp = 1;
 		window->next_frame = time + window->frame_duration;
 	}
+	//sleep(1);
+	printf(" 2 %s\n",__func__);
 
 	wl_surface_damage(window->surface,
 			  0, 0, window->width, window->height);
 
 	if (callback)
 		wl_callback_destroy(callback);
+	printf(" 3 %s\n",__func__);
 
 	window->callback = wl_surface_frame(window->surface);
 	wl_callback_add_listener(window->callback, &frame_listener, window);
 
 	wl_surface_commit(window->surface);
+	printf(" 4 %s %p\n",__func__,window->display);
+	wl_display_flush(window->display->display);
+	printf(" < %s\n",__func__);
 }
 
 static const struct wl_callback_listener frame_listener = {
@@ -261,13 +280,13 @@ create_window(struct display *display, uint32_t format, int width, int height)
 		if (display->formats[i] == fourcc_code('Y','U','1','2'))
 			break;
 	}
-
+#if 0
 	if (i == display->format_count)  {
 		fprintf(stderr,
 			"format WL_BUFFER_FORMAT_ARGB8888 not supported\n");
 		return NULL;
 	}		
-
+#endif
 	window = malloc(sizeof *window);
 
 	window->has_timestamp = 0;
@@ -290,6 +309,7 @@ create_window(struct display *display, uint32_t format, int width, int height)
 
 	window->front = create_buffer(window, window->format);
 	window->back = create_buffer(window, window->format);
+
 
 	switch (window->format) {
 	case fourcc_code('Y','U','1','2'):
@@ -417,6 +437,8 @@ registry_handle_global(void *data, struct wl_registry *registry, uint32_t id,
 					   &wl_shell_interface, 1);
 	} else if (strcmp(interface, "wl_drm") == 0) {
 		add_listeners(d,id);
+	} else if (strcmp(interface, "android_wlegl") == 0) {
+		add_listeners(d,id);
 	} else if (strcmp(interface, "wl_seat") == 0) {
 		d->seat = wl_registry_bind(d->registry,
 					   id, &wl_seat_interface, 1);
@@ -526,6 +548,12 @@ fullscreen_window(struct window *window)
 					0, NULL);
 }
 
+static void
+signal_int(int signum)
+{
+	g_run = 0;
+}
+
 int
 main(int argc, char **argv)
 {
@@ -534,6 +562,7 @@ main(int argc, char **argv)
 	uint32_t format = fourcc_code('Y','U','1','2');
 	FILE *source = NULL;
 	int i, fullscreen = 0;
+	struct sigaction sigint;
 
 	for (i = 1; i < argc; i++) {
 		if (strcmp(argv[i], "--yuyv") == 0)
@@ -555,7 +584,7 @@ main(int argc, char **argv)
 	if (source) {
 		window = parse_header(display, format, source);
 	} else {
-		window = create_window(display, format, 512, 512);
+		window = create_window(display, format, atoi(getenv("WIDTH")), atoi(getenv("HEIGHT")));
 		window->paint = paint_pixels;
 	}
 	if (window == NULL) {
@@ -568,11 +597,18 @@ main(int argc, char **argv)
 		fullscreen_window(window);
 
 	redraw(window, NULL, 0);
+
+	sigint.sa_handler = signal_int;
+	sigemptyset(&sigint.sa_mask);
+	sigint.sa_flags = SA_RESETHAND;
+	sigaction(SIGINT, &sigint, NULL);
+
 	int ret=0;
 	while (g_run && ret!=-1) {
+		printf("loop\n");
 		ret = wl_display_dispatch(display->display);
 	}
-
+	printf("all done.\n");
 	destroy_window(window);
 	destroy_display(display);
 

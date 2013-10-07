@@ -44,6 +44,7 @@ struct window {
 
 struct buffer* buffer_alloc(struct display*, struct window*, struct buffer*, uint32_t format);
 unsigned char* buffer_mmap(struct display*, struct buffer*) ;
+unsigned char* buffer_munmap(struct display*, struct buffer*) ;
 void add_listeners(struct display*, uint32_t);
 void module_destroy_display(struct display *display) ;
 

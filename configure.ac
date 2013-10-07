@@ -36,5 +36,14 @@ if test "x$enable_intel_drm" = "xyes"; then
     PKG_CHECK_MODULES(INTEL_DRM, [libdrm_intel])
 fi
 
+AC_ARG_ENABLE(gralloc,
+    AS_HELP_STRING([ --enable-gralloc],[Use Android buffers]),,
+    enable_gralloc=no)
+AM_CONDITIONAL(ENABLE_GRALLOC, test "x$enable_gralloc" = "xyes")
+if test "x$enable_gralloc" = "xyes"; then
+    AC_DEFINE([BUILD_GRALLOC], [1], [Use Android buffers])
+    PKG_CHECK_MODULES(HYBRIS_HARDWARE, [libhardware])
+fi
+
 AC_CONFIG_FILES([Makefile])
 AC_OUTPUT
